@@ -255,7 +255,7 @@ def test_rate_limit(self):
         print(&quot;Rate limit atteint!&quot;)
 </code></pre>
 <h3>Question 5 — À partir de combien de requêtes par minute observe-t-on les erreurs 503 ?</h3>
-<p>La configuration impose <code>max_rate: 200</code> <code>every: 1m</code>, soit <strong>200 requêtes par minute</strong> par routeur. Les erreurs 503 apparaissent donc <strong>dès que la cadence dépasse 200 req/min</strong> : les 200 premières passent (HTTP 201), toutes les suivantes dans la même fenêtre d&#39;une minute sont rejetées par KrakenD avec un <strong>HTTP 503 Service Unavailable</strong>, sans jamais atteindre <code>store_manager</code>.</p>
+<p>La configuration impose <code>max_rate: 200</code> <code>every: 1m</code>, soit <strong>200 requêtes par minute</strong> par routeur. Les erreurs 503 apparaissent donc <strong>dès que la cadence dépasse 200 req/min</strong> : les 200 premières passent (HTTP 200, KrakenD normalise le 201 du backend), toutes les suivantes dans la même fenêtre d&#39;une minute sont rejetées par KrakenD avec un <strong>HTTP 503 Service Unavailable</strong>, sans jamais atteindre <code>store_manager</code>.</p>
 <p>J&#39;ai lancé Locust en headless, 100 utilisateurs, <em>spawn rate</em> 1/s, pendant 90 s, ciblant l&#39;API Gateway. La charge offerte (~22,9 req/s ≈ <strong>1 375 req/min</strong>) dépasse largement la limite, donc la grande majorité des requêtes sont rejetées :</p>
 <pre><code>Type  Name                              # reqs   # fails             |  req/s  failures/s
 POST  /store-manager-api/orders          2054   1759 (85.64%)        |  22.93     19.64
@@ -316,7 +316,7 @@ KRAKEND ERROR: [ENDPOINT: /store-manager-api/test/slow/:delay] context deadline 
 <p>J&#39;ai exécuté un test de charge avec Locust sur la création de commandes à travers l&#39;API Gateway (100 utilisateurs, <em>spawn rate</em> 1/s). Les deux services tournent en conteneurs sur le même réseau <code>labo05-network</code>, le <code>store_manager</code> avec MySQL + Redis, le <code>payments_api</code> avec sa propre base MySQL.</p>
 <p>Observations principales :</p>
 <ul>
-<li>Tant que la cadence reste sous <code>200 req/min</code>, les requêtes passent (HTTP 201) et chaque commande déclenche bien la création d&#39;un paiement dans le microservice.</li>
+<li>Tant que la cadence reste sous <code>200 req/min</code>, les requêtes passent (HTTP 200 via la gateway) et chaque commande déclenche bien la création d&#39;un paiement dans le microservice.</li>
 <li>Au-delà, l&#39;API Gateway protège le backend : les requêtes excédentaires sont rejetées (rate limiting) <strong>avant</strong> d&#39;atteindre <code>store_manager</code>, ce qui maintient les temps de réponse du backend stables même sous forte charge. C&#39;est exactement le rôle attendu d&#39;une façade : absorber et réguler le trafic pour protéger les services en aval.</li>
 </ul>
 <hr>

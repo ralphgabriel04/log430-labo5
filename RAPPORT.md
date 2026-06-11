@@ -309,7 +309,7 @@ def test_rate_limit(self):
 
 ### Question 5 — À partir de combien de requêtes par minute observe-t-on les erreurs 503 ?
 
-La configuration impose `max_rate: 200` `every: 1m`, soit **200 requêtes par minute** par routeur. Les erreurs 503 apparaissent donc **dès que la cadence dépasse 200 req/min** : les 200 premières passent (HTTP 201), toutes les suivantes dans la même fenêtre d'une minute sont rejetées par KrakenD avec un **HTTP 503 Service Unavailable**, sans jamais atteindre `store_manager`.
+La configuration impose `max_rate: 200` `every: 1m`, soit **200 requêtes par minute** par routeur. Les erreurs 503 apparaissent donc **dès que la cadence dépasse 200 req/min** : les 200 premières passent (HTTP 200, KrakenD normalise le 201 du backend), toutes les suivantes dans la même fenêtre d'une minute sont rejetées par KrakenD avec un **HTTP 503 Service Unavailable**, sans jamais atteindre `store_manager`.
 
 J'ai lancé Locust en headless, 100 utilisateurs, *spawn rate* 1/s, pendant 90 s, ciblant l'API Gateway. La charge offerte (~22,9 req/s ≈ **1 375 req/min**) dépasse largement la limite, donc la grande majorité des requêtes sont rejetées :
 
@@ -398,7 +398,7 @@ Dans le navigateur, au lieu d'attendre 10 secondes, la requête est **interrompu
 J'ai exécuté un test de charge avec Locust sur la création de commandes à travers l'API Gateway (100 utilisateurs, *spawn rate* 1/s). Les deux services tournent en conteneurs sur le même réseau `labo05-network`, le `store_manager` avec MySQL + Redis, le `payments_api` avec sa propre base MySQL.
 
 Observations principales :
-- Tant que la cadence reste sous `200 req/min`, les requêtes passent (HTTP 201) et chaque commande déclenche bien la création d'un paiement dans le microservice.
+- Tant que la cadence reste sous `200 req/min`, les requêtes passent (HTTP 200 via la gateway) et chaque commande déclenche bien la création d'un paiement dans le microservice.
 - Au-delà, l'API Gateway protège le backend : les requêtes excédentaires sont rejetées (rate limiting) **avant** d'atteindre `store_manager`, ce qui maintient les temps de réponse du backend stables même sous forte charge. C'est exactement le rôle attendu d'une façade : absorber et réguler le trafic pour protéger les services en aval.
 
 ---
