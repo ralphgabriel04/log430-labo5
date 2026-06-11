@@ -10,7 +10,8 @@ table{border-collapse:collapse;margin:10px 0;width:100%}
 th,td{border:1px solid #bbb;padding:5px 9px;text-align:left;font-size:.95em}
 th{background:#f0f0f0}
 img{max-width:100%;border:1px solid #ccc;border-radius:4px;margin:8px 0}
-blockquote{border-left:4px solid #4a90d9;margin:10px 0;padding:4px 14px;background:#f7fbff;color:#333}
+a{color:#1a1a1a;text-decoration:none}
+blockquote{border-left:4px solid #999;margin:10px 0;padding:4px 14px;background:#f4f4f4;color:#333}
 h2{page-break-after:avoid}
 </style></head><body><h1>Rapport — Laboratoire 5 : Microservices, SOA, SBA, API Gateway, Rate Limit &amp; Timeout</h1>
 <p><strong>LOG430-02 — Architecture logicielle, École de technologie supérieure (ÉTS)</strong></p>
@@ -22,7 +23,7 @@ h2{page-break-after:avoid}
 <strong>Date des mesures :</strong> 2026-06-10</p>
 <hr>
 <h2>Introduction</h2>
-<p>Ce laboratoire ajoute le paiement à l&#39;application <em>Store Manager</em>. Plutôt que d&#39;ajouter un répertoire <code>payments</code> dans le projet existant, le paiement est développé comme un <strong>microservice séparé</strong> dans son propre dépôt (<code>log430-labo5-payment</code>), avec sa propre base de données. Les deux services ne communiquent jamais directement : tout passe par un <strong>API Gateway KrakenD</strong>, qui sert de façade unique et achemine chaque requête vers le bon service. Ainsi, si un hostname ou un chemin interne change, seule la configuration de KrakenD doit être mise à jour, jamais le code des services.</p>
+<p>Ce laboratoire ajoute le paiement à l&#39;application <em>Store Manager</em>. On aurait pu créer un simple répertoire <code>payments</code> dans le projet, mais le paiement est plutôt développé comme un microservice à part, dans son propre dépôt (<code>log430-labo5-payment</code>) et avec sa propre base de données. Les deux services ne se parlent jamais directement : tout passe par un API Gateway KrakenD, qui fait office de façade unique et redirige chaque requête vers le bon service. L&#39;avantage, c&#39;est que si un hostname ou un chemin interne change, on ne met à jour que la configuration de KrakenD, pas le code des services.</p>
 <p>J&#39;ai validé chaque activité en exécutant réellement le code (les deux stacks Docker tournent en parallèle sur le même réseau <code>labo05-network</code>), pas en me fiant à ce qui <em>devrait</em> marcher. Toutes les sorties reproduites ici proviennent de ces exécutions.</p>
 <h3>Vue d&#39;ensemble du flux</h3>
 <pre><code>                         ┌──────────────────────────┐
@@ -128,15 +129,15 @@ $ curl http://localhost:5009/payments/13
 }
 </code></pre>
 <h3>Question 2 — Quel type d&#39;information envoyons-nous dans <code>POST payments/process/:id</code> ? Serait-ce le même format en SOA ?</h3>
-<p>Nous envoyons les <strong>données de la carte de crédit</strong>, en <strong>JSON</strong>, dans le corps de la requête :</p>
+<p>On envoie les données de la carte de crédit, en JSON, dans le corps de la requête :</p>
 <pre><code class="language-json">{
     &quot;cardNumber&quot;: 9999999999999,
     &quot;cardCode&quot;: 123,
     &quot;expirationDate&quot;: &quot;2030-01-05&quot;
 }
 </code></pre>
-<p>C&#39;est une communication <strong>REST/JSON</strong> typique des microservices : un verbe HTTP (<code>POST</code>), une ressource identifiée par l&#39;URL (<code>/payments/process/13</code>) et une charge utile JSON légère.</p>
-<p>Avec un service <strong>SOA</strong>, le format serait différent. SOA s&#39;appuie typiquement sur <strong>SOAP/XML</strong> transporté via un <strong>ESB (Enterprise Service Bus)</strong> et décrit par un contrat <strong>WSDL</strong>. La même information ressemblerait plutôt à une enveloppe SOAP, beaucoup plus verbeuse :</p>
+<p>C&#39;est de la communication REST/JSON, comme on en fait habituellement entre microservices : un verbe HTTP (<code>POST</code>), une ressource identifiée par l&#39;URL (<code>/payments/process/13</code>) et un corps JSON léger.</p>
+<p>En SOA, le format ne serait pas le même. Là, on s&#39;appuie plutôt sur du SOAP/XML transporté par un ESB (Enterprise Service Bus) et décrit par un contrat WSDL. La même information prendrait la forme d&#39;une enveloppe SOAP, nettement plus verbeuse :</p>
 <pre><code class="language-xml">&lt;soap:Envelope xmlns:soap=&quot;http://www.w3.org/2003/05/soap-envelope&quot;&gt;
   &lt;soap:Body&gt;
     &lt;ProcessPayment xmlns=&quot;http://store-manager/payments&quot;&gt;
@@ -148,7 +149,7 @@ $ curl http://localhost:5009/payments/13
   &lt;/soap:Body&gt;
 &lt;/soap:Envelope&gt;
 </code></pre>
-<p>Donc <strong>non</strong>, ce ne serait pas le même format : REST/JSON (léger, sans contrat formel obligatoire) en microservices, contre SOAP/XML/WSDL via ESB (lourd, fortement typé) en SOA. C&#39;est d&#39;ailleurs un des arguments de l&#39;ADR 001 du dépôt de paiement en faveur des microservices : des protocoles de communication légers, déjà alignés avec le reste du <code>store_manager</code>.</p>
+<p>Donc non, ce ne serait pas le même format : REST/JSON léger et sans contrat formel obligatoire côté microservices, contre SOAP/XML/WSDL via ESB, lourd et fortement typé, côté SOA. C&#39;est d&#39;ailleurs un des arguments avancés par l&#39;ADR 001 du dépôt de paiement pour justifier le choix des microservices : des protocoles de communication légers, déjà cohérents avec le reste du <code>store_manager</code>.</p>
 <h3>Question 3 — Quel résultat obtenons-nous de <code>POST payments/process/:id</code> ?</h3>
 <pre><code class="language-json">{&quot;is_paid&quot;: true, &quot;order_id&quot;: 1, &quot;payment_id&quot;: 13}
 </code></pre>
@@ -310,15 +311,11 @@ KRAKEND ERROR: [ENDPOINT: /store-manager-api/test/slow/:delay] context deadline 
 [GIN] | 500 | 5.001904466s | GET &quot;/store-manager-api/test/slow/10&quot;
 </code></pre>
 <p>Dans le navigateur, au lieu d&#39;attendre 10 secondes, la requête est <strong>interrompue par KrakenD au bout d&#39;exactement 5 secondes</strong> : on reçoit une erreur (HTTP 500, corps vide), et le journal indique <code>context deadline exceeded</code>. Le <code>store_manager</code>, lui, continue son <code>sleep(10)</code> en arrière-plan, mais sa réponse est ignorée car le client a déjà été libéré.</p>
-<p><strong>Importance du timeout en microservices.</strong> Sans timeout, un service lent (ou bloqué) propage sa lenteur à tous ceux qui l&#39;appellent : les requêtes s&#39;empilent, les threads/connexions se saturent, et une panne locale se transforme en panne globale (<em>cascading failure</em>). Le timeout est une protection : il garantit un temps de réponse borné, libère rapidement les ressources, et permet de basculer vers une stratégie de repli (réessai, valeur par défaut, <em>circuit breaker</em>). Concrètement ici, si <code>payments_api</code> devenait très lent, le timeout de 5 s sur la gateway empêcherait une seule transaction lente de bloquer la création des commandes pour tous les autres clients.</p>
+<p>Importance du timeout en microservices. Un service lent qui n&#39;a pas de limite de temps finit par bloquer tous ceux qui l&#39;appellent. Les requêtes s&#39;accumulent, les connexions restent ouvertes, et ce qui n&#39;était au départ qu&#39;une lenteur sur un seul service se propage à tout le système. C&#39;est le scénario classique de la panne en cascade. Le timeout met une borne là-dessus : passé 5 secondes, KrakenD abandonne la requête et libère la connexion au lieu d&#39;attendre indéfiniment. Ici, si <code>payments_api</code> ralentissait, ce timeout éviterait qu&#39;une transaction bloquée fasse traîner la création des commandes pour tout le monde.</p>
 <hr>
 <h2>Activité 7 — Test de charge</h2>
 <p>J&#39;ai exécuté un test de charge avec Locust sur la création de commandes à travers l&#39;API Gateway (100 utilisateurs, <em>spawn rate</em> 1/s). Les deux services tournent en conteneurs sur le même réseau <code>labo05-network</code>, le <code>store_manager</code> avec MySQL + Redis, le <code>payments_api</code> avec sa propre base MySQL.</p>
-<p>Observations principales :</p>
-<ul>
-<li>Tant que la cadence reste sous <code>200 req/min</code>, les requêtes passent (HTTP 200 via la gateway) et chaque commande déclenche bien la création d&#39;un paiement dans le microservice.</li>
-<li>Au-delà, l&#39;API Gateway protège le backend : les requêtes excédentaires sont rejetées (rate limiting) <strong>avant</strong> d&#39;atteindre <code>store_manager</code>, ce qui maintient les temps de réponse du backend stables même sous forte charge. C&#39;est exactement le rôle attendu d&#39;une façade : absorber et réguler le trafic pour protéger les services en aval.</li>
-</ul>
+<p>Ce que j&#39;ai observé : tant que la cadence reste sous 200 req/min, les requêtes passent (HTTP 200 via la gateway) et chaque commande crée bien son paiement dans le microservice. Dès qu&#39;on dépasse, KrakenD rejette les requêtes en trop avant même qu&#39;elles atteignent <code>store_manager</code>. Le backend ne voit donc jamais la surcharge, et ses temps de réponse restent stables même quand Locust tape fort. C&#39;est tout l&#39;intérêt de mettre une gateway devant : elle encaisse le trop-plein à la place des services.</p>
 <hr>
 <h2>Intégration CI/CD et conteneurisation</h2>
 <p>Le projet est réparti sur deux dépôts GitHub, chacun avec son propre pipeline :</p>
@@ -346,12 +343,6 @@ tests/test_payments.py::test_get_payment      PASSED   [100%]
 <p>L&#39;ensemble du projet est conteneurisé via <code>docker compose</code> : un réseau partagé <code>labo05-network</code> (externe) relie les deux stacks, ce qui permet à l&#39;API Gateway de router vers les deux services et au service de paiement de rappeler le <code>store_manager</code>.</p>
 <hr>
 <h2>Conclusion</h2>
-<p>Le laboratoire montre une intégration complète entre deux microservices indépendants, médiée de bout en bout par un API Gateway :</p>
-<ul>
-<li>une transaction de paiement est générée <strong>après chaque commande</strong> (Activité 1) ;</li>
-<li>la commande est mise à jour <strong>après chaque paiement</strong> (Activité 4) ;</li>
-<li>KrakenD applique un <strong>rate limiting</strong> (Activité 5) et un <strong>timeout</strong> (Activité 6), avec un endpoint de test dédié ;</li>
-<li>le tout est testé et conteneurisé, avec un pipeline CI/CD par dépôt.</li>
-</ul>
-<p>Le choix de passer systématiquement par la gateway (et non par des appels directs entre services) est ce qui rend l&#39;architecture évolutive : les hostnames et chemins internes peuvent changer sans toucher au code des services, seule la configuration de KrakenD évolue.</p>
+<p>Au bout du compte, les deux microservices communiquent dans les deux sens en passant toujours par la gateway. La commande crée son paiement (Activité 1), le paiement met à jour la commande une fois réglé (Activité 4), et KrakenD encadre le tout avec un rate limiting (Activité 5) et un timeout (Activité 6). Chaque service a ses tests et son pipeline CI/CD.</p>
+<p>Ce qui m&#39;a paru le plus intéressant, c&#39;est que rien dans le code des services ne mentionne l&#39;adresse de l&#39;autre : tout est dans <code>krakend.json</code>. Si demain un service change de hostname ou de port, on touche à la configuration de la gateway et c&#39;est réglé, sans recompiler ni redéployer le Store Manager. C&#39;est là que la séparation en microservices prend tout son sens.</p>
 </body></html>
