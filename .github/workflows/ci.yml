@@ -67,11 +67,31 @@ jobs:
         working-directory: src
         run: pytest -v
 
-  build:
+  # Build de l'image Docker (conteneurisation) + déploiement automatisé vers
+  # GitHub Container Registry (ghcr.io) sur push vers main. Sur les pull requests,
+  # l'image est seulement construite (pas publiée).
+  build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build de l'image Docker (conteneurisation)
-        run: docker build -t store-manager:${{ github.sha }} .
+      - name: Connexion à GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build et push de l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
