@@ -1,0 +1,13 @@
+pytest>=7.0
+python-dotenv>=1.0
+Flask>=2.0
+SQLAlchemy>=1.4
+mysql-connector-python>=8.0
+pymysql>=1.1
+cryptography>=45.0
+redis>=4.0
+graphene>=3.4
+requests>=2.32
+prometheus-client 
+prometheus-flask-exporter
+locust

@@ -1,0 +1,12 @@
+@startuml
+    Vendeur.euse --> (Gérer les commandes)
+    Vendeur.euse --> (Gérer les articles)
+    Vendeur.euse --> (Gérer les stocks)
+    Vendeur.euse --> (Voir les rapports des stocks)
+    Vendeur.euse --> (Voir les rapports des commandes)
+    Vendeur.euse  --> (Gérer les utilisateurs)
+    Directeur.trice  --> (Gérer les utilisateurs)
+    Directeur.trice --> (Voir les rapports des stocks)
+    Directeur.trice --> (Voir les rapports des commandes)
+    Fournisseur --> (Voir les rapports des stocks)
+@enduml

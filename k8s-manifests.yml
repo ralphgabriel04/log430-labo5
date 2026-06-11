@@ -1,0 +1,212 @@
+# ============================================================
+# ConfigMap - app environment variables
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  DB_HOST: mysql
+  DB_PORT: "3306"
+  DB_USER: labo05
+  DB_PASSWORD: labo05
+  DB_NAME: labo05_db
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  KAFKA_HOST: ""
+
+---
+# ============================================================
+# MySQL
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4.7
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: root
+            - name: MYSQL_DATABASE
+              value: labo05_db
+            - name: MYSQL_USER
+              value: labo05
+            - name: MYSQL_PASSWORD
+              value: labo05
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: db-init
+              mountPath: /docker-entrypoint-initdb.d
+          livenessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+        - name: db-init
+          configMap:
+            name: db-init
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+
+---
+# ============================================================
+# Redis
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          ports:
+            - containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 60
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+
+---
+# ============================================================
+# store_manager (your app)
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: store-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: store-manager
+  template:
+    metadata:
+      labels:
+        app: store-manager
+    spec:
+      containers:
+        - name: store-manager
+          image: nkinesis/store-manager:latest
+          envFrom:
+            - configMapRef:
+                name: app-config
+          ports:
+            - containerPort: 5000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: store-manager
+spec:
+  selector:
+    app: store-manager
+  ports:
+    - port: 5000
+  type: NodePort
+
+---
+# ============================================================
+# KrakenD API Gateway
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: api-gateway
+          image: devopsfaith/krakend:2.7
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: krakend-config
+              mountPath: /etc/krakend/krakend.json
+              subPath: krakend.json
+      volumes:
+        - name: krakend-config
+          configMap:
+            name: krakend-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - port: 8080
+  type: NodePort

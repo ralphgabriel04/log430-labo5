@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "name": "Store Manager API Gateway",
+  "timeout": "5s",
+  "cache_ttl": "300s",
+  "output_encoding": "json",
+  "port": 8080,
+  "endpoints": [
+    {
+      "endpoint": "/payments-api/payments",
+      "method": "POST", 
+      "backend": [
+        {
+          "url_pattern": "/payments",
+          "host": ["http://payments_api:5009"],
+          "timeout": "5s"
+        }
+      ]
+    },
+    {
+      "endpoint": "/payments-api/payments/process/{payment_id}",
+      "method": "POST", 
+      "backend": [
+        {
+          "url_pattern": "/payments/process/{payment_id}",
+          "host": ["http://payments_api:5009"],
+          "timeout": "5s"
+        }
+      ]
+    }
+  ]
+}

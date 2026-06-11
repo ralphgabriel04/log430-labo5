@@ -1,0 +1,85 @@
+@startuml
+    class User {
+        + id: int
+        + name: string
+        + email: string
+    }
+
+    class Product {
+        + id: int
+        + name: string
+        + sku: string
+        + price: float
+    }
+
+    class Stock {
+        + product_id: int
+        + quantity: int
+    }
+
+    class OrderItem {
+        + id: int
+        + order_id: int
+        + product_id: int
+        + quantity: int
+        + unit_price: float
+    }
+
+    class Order {
+        + id: int
+        + user_id: int
+        + total_amount: float
+    }
+
+    class WriteOrder {
+        + add_order(Order) : int
+        + delete_order(int) : int
+        + add_order_to_redis(Order) : void
+        + delete_order_from_redis(int) : void
+    }
+
+    class WriteStock {
+        + check_in_items_to_stock(OrderItem[]) : void
+        + check_out_items_from_stock(OrderItem[]) : void
+        + update_stock_redis(OrderItem[], String) : void
+    }
+
+    class ReadStock {
+        + get_stock_by_id(int) : JSONObject
+        + get_stock_for_all_products() : JSONArray
+    }
+
+    class ReadOrder {
+        + get_order_by_id(int) : Order
+        + get_highest_spending_users() : JSONArray
+        + get_best_selling_products() : JSONArray
+    }
+
+    class OrderController {
+        + create_order(RequestBody) : JSONObject
+        + delete_order(int) : JSONObject
+        + get_order(int) : Order
+        + get_report_highest_spending_users(int) : JSONArray
+        + get_report_best_selling_products(int) : JSONArray
+    }
+
+    class StockController {
+        + set_stock(RequestBody) : JSONObject
+        + get_stock(int) : JSONObject
+        + get_stock_overview() : JSONArray
+    }
+
+    OrderItem --> Order
+    User <-- Order
+    Product <-- OrderItem
+    WriteOrder --> Order
+    WriteOrder --> OrderItem
+    WriteOrder --> Product
+    WriteOrder --> WriteStock
+    WriteStock --> Stock
+    OrderController --> WriteOrder
+    OrderController --> ReadOrder
+    StockController --> ReadStock
+    StockController --> WriteStock
+    Stock --> Product
+@enduml

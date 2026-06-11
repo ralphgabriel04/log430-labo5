@@ -1,0 +1,20 @@
+@startuml
+  node Magasin {
+    component "KrakenD" 
+    component "store_manager.py" 
+    database "MySQL 1"
+    database "Redis"
+    "KrakenD" <--> "store_manager.py"
+    "store_manager.py" <--> "MySQL 1"
+    "store_manager.py" <--> "Redis"
+  }
+
+  node ServicePaiement {
+    component "payment_service.py" 
+    database "MySQL 2"
+    "payment_service.py" <--> "MySQL 2"
+  }
+
+  "KrakenD" <--> "payment_service.py" : HTTPS
+
+@enduml

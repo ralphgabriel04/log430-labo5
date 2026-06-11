@@ -1,0 +1,23 @@
+@startuml
+    start
+        :Choisir une option de gestion du magasin;
+        if (Ajouter une commande) then (oui)           
+            :Ajouter les articles à la commande;
+            note left : De même, nous pouvons ajouter/supprimer des utilisateurs et des articles
+            :Confirmer la commande;
+        elseif (Supprimer une commande) then (oui) 
+            :Saisir un ID de commande;
+            :Confirmer la suppression;
+        elseif (Mettre à jour un article dans le stock) then (oui) 
+            :Saisir un ID d'article;
+            :Saisir la quantité de l'article dans le stock;
+            :Confirmer la mise à jour;
+        elseif (Voir rapport : les plus gros acheteurs) then (oui)
+            :Voir le rapport;
+        elseif (Voir rapport : articles les plus vendus) then (oui) 
+            :Voir le rapport;
+        elseif (Voir rapport: aperçu des stocks) then (oui) 
+            :Voir le rapport;
+        endif
+    stop
+@enduml
