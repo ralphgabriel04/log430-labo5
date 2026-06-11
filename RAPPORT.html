@@ -13,11 +13,13 @@ img{max-width:100%;border:1px solid #ccc;border-radius:4px;margin:8px 0}
 blockquote{border-left:4px solid #4a90d9;margin:10px 0;padding:4px 14px;background:#f7fbff;color:#333}
 h2{page-break-after:avoid}
 </style></head><body><h1>Rapport — Laboratoire 5 : Microservices, SOA, SBA, API Gateway, Rate Limit &amp; Timeout</h1>
-<p>LOG430 — Architecture logicielle, École de technologie supérieure (ÉTS)
-Chargé de laboratoire : Gabriel C. Ullmann</p>
-<p>Ralph Christian Gabriel
-Code permanent : GABR77340401
-Session : Été 2026</p>
+<p><strong>LOG430-02 — Architecture logicielle, École de technologie supérieure (ÉTS)</strong></p>
+<p><strong>Chargé de laboratoire :</strong> Gabriel C. Ullmann
+<strong>Étudiant :</strong> Ralph Christian Gabriel
+<strong>Code permanent :</strong> GABR77340401
+<strong>Session :</strong> Été 2026
+<strong>Application :</strong> Store Manager (suite du Labo 03)
+<strong>Date des mesures :</strong> 2026-06-10</p>
 <hr>
 <h2>Introduction</h2>
 <p>Ce laboratoire ajoute le paiement à l&#39;application <em>Store Manager</em>. Plutôt que d&#39;ajouter un répertoire <code>payments</code> dans le projet existant, le paiement est développé comme un <strong>microservice séparé</strong> dans son propre dépôt (<code>log430-labo5-payment</code>), avec sa propre base de données. Les deux services ne communiquent jamais directement : tout passe par un <strong>API Gateway KrakenD</strong>, qui sert de façade unique et achemine chaque requête vers le bon service. Ainsi, si un hostname ou un chemin interne change, seule la configuration de KrakenD doit être mise à jour, jamais le code des services.</p>
@@ -319,6 +321,11 @@ KRAKEND ERROR: [ENDPOINT: /store-manager-api/test/slow/:delay] context deadline 
 </ul>
 <hr>
 <h2>Intégration CI/CD et conteneurisation</h2>
+<p>Le projet est réparti sur deux dépôts GitHub, chacun avec son propre pipeline :</p>
+<ul>
+<li>Store Manager : <a href="https://github.com/ralphgabriel04/log430-labo5">https://github.com/ralphgabriel04/log430-labo5</a></li>
+<li>Service de paiement : <a href="https://github.com/ralphgabriel04/log430-labo5-payment">https://github.com/ralphgabriel04/log430-labo5-payment</a></li>
+</ul>
 <p>Chaque dépôt possède un pipeline GitHub Actions (<code>.github/workflows/ci.yml</code>) qui s&#39;exécute à chaque <code>push</code>/<code>pull_request</code> et comporte deux jobs :</p>
 <ol>
 <li><strong><code>test</code></strong> — installe les dépendances, démarre les services nécessaires (MySQL, et Redis pour <code>store_manager</code>) comme <em>service containers</em>, crée le <code>.env</code>, charge le schéma + données seed (<code>db-init/init.sql</code>), puis exécute <code>pytest</code>.</li>

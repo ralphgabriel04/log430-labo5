@@ -1,11 +1,13 @@
 # Rapport — Laboratoire 5 : Microservices, SOA, SBA, API Gateway, Rate Limit & Timeout
 
-LOG430 — Architecture logicielle, École de technologie supérieure (ÉTS)
-Chargé de laboratoire : Gabriel C. Ullmann
+**LOG430-02 — Architecture logicielle, École de technologie supérieure (ÉTS)**
 
-Ralph Christian Gabriel
-Code permanent : GABR77340401
-Session : Été 2026
+**Chargé de laboratoire :** Gabriel C. Ullmann
+**Étudiant :** Ralph Christian Gabriel
+**Code permanent :** GABR77340401
+**Session :** Été 2026
+**Application :** Store Manager (suite du Labo 03)
+**Date des mesures :** 2026-06-10
 
 ---
 
@@ -402,6 +404,10 @@ Observations principales :
 ---
 
 ## Intégration CI/CD et conteneurisation
+
+Le projet est réparti sur deux dépôts GitHub, chacun avec son propre pipeline :
+- Store Manager : <https://github.com/ralphgabriel04/log430-labo5>
+- Service de paiement : <https://github.com/ralphgabriel04/log430-labo5-payment>
 
 Chaque dépôt possède un pipeline GitHub Actions (`.github/workflows/ci.yml`) qui s'exécute à chaque `push`/`pull_request` et comporte deux jobs :
 
