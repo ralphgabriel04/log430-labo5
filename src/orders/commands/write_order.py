@@ -109,17 +109,36 @@ def request_payment_link(order_id, total_amount, user_id):
     payment_transaction = {
         "user_id": user_id,
         "order_id": order_id,
-        "total_amount": total_amount
+        # total_amount est un Decimal SQLAlchemy : on le convertit en float pour qu'il soit
+        # sérialisable en JSON par la librairie requests.
+        "total_amount": float(total_amount)
     }
 
-    # TODO: Requête à POST /payments
-    print("")
-    response_from_payment_service = {}
+    # Requête à POST /payments via l'API Gateway KrakenD.
+    # On n'appelle JAMAIS le service de paiement directement : KrakenD reçoit la requête sur
+    # /payments-api/payments et l'achemine vers http://payments_api:5009/payments
+    # (voir config/krakend.json). Ainsi, si le hostname ou le chemin du service change,
+    # seule la configuration de KrakenD doit être modifiée, pas le Store Manager.
+    try:
+        response_from_payment_service = requests.post(
+            'http://api-gateway:8080/payments-api/payments',
+            json=payment_transaction,
+            headers={'Content-Type': 'application/json'},
+            timeout=5
+        )
 
-    if True: # if response.ok
-        print(f"ID paiement: {payment_id}")
+        if response_from_payment_service.ok:  # if response.ok
+            payment_id = response_from_payment_service.json().get('payment_id', 0)
+            print(f"ID paiement: {payment_id}")
+        else:
+            logger.error(
+                f"Le service de paiement a répondu {response_from_payment_service.status_code} : "
+                f"{response_from_payment_service.text}"
+            )
+    except requests.RequestException as e:
+        logger.error(f"Erreur lors de l'appel au service de paiement : {e}")
 
-    return f"http://api-gateway:8080/payments-api/payments/process/{payment_id}" 
+    return f"http://api-gateway:8080/payments-api/payments/process/{payment_id}"
 
 def delete_order(order_id: int):
     """Delete order in MySQL, keep Redis in sync"""

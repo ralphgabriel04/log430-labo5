@@ -1,0 +1,350 @@
+<!DOCTYPE html><html><head><meta charset='utf-8'><style>
+body{font-family:Segoe UI,Arial,sans-serif;max-width:850px;margin:24px auto;line-height:1.5;color:#1a1a1a;padding:0 16px}
+h1{border-bottom:2px solid #444;padding-bottom:6px}
+h2{border-bottom:1px solid #ccc;padding-bottom:4px;margin-top:28px}
+h3{margin-top:20px}
+code{background:#f4f4f4;padding:1px 4px;border-radius:3px;font-family:Consolas,monospace;font-size:.92em}
+pre{background:#f4f4f4;padding:10px 12px;border-radius:6px;overflow:auto;border:1px solid #e0e0e0;page-break-inside:avoid}
+pre code{background:none;padding:0;font-size:.85em;line-height:1.35}
+table{border-collapse:collapse;margin:10px 0;width:100%}
+th,td{border:1px solid #bbb;padding:5px 9px;text-align:left;font-size:.95em}
+th{background:#f0f0f0}
+img{max-width:100%;border:1px solid #ccc;border-radius:4px;margin:8px 0}
+blockquote{border-left:4px solid #4a90d9;margin:10px 0;padding:4px 14px;background:#f7fbff;color:#333}
+h2{page-break-after:avoid}
+</style></head><body><h1>Rapport — Laboratoire 5 : Microservices, SOA, SBA, API Gateway, Rate Limit &amp; Timeout</h1>
+<p>LOG430 — Architecture logicielle, École de technologie supérieure (ÉTS)
+Chargé de laboratoire : Gabriel C. Ullmann</p>
+<p>Ralph Christian Gabriel
+Code permanent : GABR77340401
+Session : Été 2026</p>
+<hr>
+<h2>Introduction</h2>
+<p>Ce laboratoire ajoute le paiement à l&#39;application <em>Store Manager</em>. Plutôt que d&#39;ajouter un répertoire <code>payments</code> dans le projet existant, le paiement est développé comme un <strong>microservice séparé</strong> dans son propre dépôt (<code>log430-labo5-payment</code>), avec sa propre base de données. Les deux services ne communiquent jamais directement : tout passe par un <strong>API Gateway KrakenD</strong>, qui sert de façade unique et achemine chaque requête vers le bon service. Ainsi, si un hostname ou un chemin interne change, seule la configuration de KrakenD doit être mise à jour, jamais le code des services.</p>
+<p>J&#39;ai validé chaque activité en exécutant réellement le code (les deux stacks Docker tournent en parallèle sur le même réseau <code>labo05-network</code>), pas en me fiant à ce qui <em>devrait</em> marcher. Toutes les sorties reproduites ici proviennent de ces exécutions.</p>
+<h3>Vue d&#39;ensemble du flux</h3>
+<pre><code>                         ┌──────────────────────────┐
+   Client (Postman/      │   API Gateway — KrakenD  │
+   navigateur/Locust) ──▶│   (port hôte 8081→8080)  │
+                         │  rate limit + timeout     │
+                         └────────┬─────────┬────────┘
+              /store-manager-api/ │         │ /payments-api/
+                                  ▼         ▼
+                  ┌────────────────────┐   ┌────────────────────┐
+                  │   store_manager    │   │    payments_api    │
+                  │   Flask :5000      │   │    Flask :5009     │
+                  │  MySQL + Redis     │   │  MySQL (paiements) │
+                  └────────────────────┘   └────────────────────┘
+                          ▲                          │
+                          └──── PUT /orders (is_paid) ┘
+                               (via la gateway)
+</code></pre>
+<p>Deux échanges traversent la gateway :</p>
+<ol>
+<li>À la création d&#39;une commande, <code>store_manager</code> demande à <code>payments_api</code> de créer une transaction de paiement (<code>POST /payments</code>).</li>
+<li>Une fois le paiement traité, <code>payments_api</code> notifie en retour <code>store_manager</code> que la commande est payée (<code>PUT /orders</code>).</li>
+</ol>
+<blockquote>
+<p><strong>Note sur le port.</strong> Le port 8080 était déjà occupé sur ma machine hôte par un autre service. J&#39;ai donc publié l&#39;API Gateway sur le port hôte <strong>8081</strong> (<code>&quot;8081:8080&quot;</code> dans <code>docker-compose.yml</code>). Le port <strong>interne</strong> du conteneur reste 8080, donc toutes les URLs inter-conteneurs (<code>http://api-gateway:8080/...</code>) sont inchangées ; seules les requêtes faites depuis l&#39;hôte (navigateur, curl) utilisent <code>localhost:8081</code>.</p>
+</blockquote>
+<hr>
+<h2>Activité 1 — Intégration du service de paiement</h2>
+<p>Dans <code>src/orders/commands/write_order.py</code>, la fonction <code>add_order</code> appelle <code>request_payment_link</code> après avoir créé la commande. J&#39;ai complété cette fonction pour qu&#39;elle fasse un <code>POST /payments</code> <strong>via l&#39;API Gateway</strong> et récupère le <code>payment_id</code> :</p>
+<pre><code class="language-python">def request_payment_link(order_id, total_amount, user_id):
+    payment_id = 0
+    payment_transaction = {
+        &quot;user_id&quot;: user_id,
+        &quot;order_id&quot;: order_id,
+        # total_amount est un Decimal SQLAlchemy : on le convertit en float
+        # pour qu&#39;il soit sérialisable en JSON.
+        &quot;total_amount&quot;: float(total_amount)
+    }
+
+    # On n&#39;appelle JAMAIS le service de paiement directement : KrakenD reçoit la
+    # requête sur /payments-api/payments et l&#39;achemine vers payments_api:5009/payments.
+    try:
+        response_from_payment_service = requests.post(
+            &#39;http://api-gateway:8080/payments-api/payments&#39;,
+            json=payment_transaction,
+            headers={&#39;Content-Type&#39;: &#39;application/json&#39;},
+            timeout=5
+        )
+        if response_from_payment_service.ok:
+            payment_id = response_from_payment_service.json().get(&#39;payment_id&#39;, 0)
+            print(f&quot;ID paiement: {payment_id}&quot;)
+        else:
+            logger.error(f&quot;Le service de paiement a répondu {response_from_payment_service.status_code} : &quot;
+                         f&quot;{response_from_payment_service.text}&quot;)
+    except requests.RequestException as e:
+        logger.error(f&quot;Erreur lors de l&#39;appel au service de paiement : {e}&quot;)
+
+    return f&quot;http://api-gateway:8080/payments-api/payments/process/{payment_id}&quot;
+</code></pre>
+<p>L&#39;URL appelée (<code>http://api-gateway:8080/payments-api/payments</code>) provient directement de <code>config/krakend.json</code>, qui mappe ce chemin vers <code>http://payments_api:5009/payments</code>.</p>
+<h3>Question 1 — Quelle réponse obtenons-nous au <code>POST /payments</code> ?</h3>
+<p>Un appel direct au <code>POST /payments</code> à travers la gateway :</p>
+<pre><code>$ curl -X POST http://localhost:8081/payments-api/payments \
+    -H &quot;Content-Type: application/json&quot; \
+    -d &#39;{&quot;user_id&quot;: 1, &quot;order_id&quot;: 1, &quot;total_amount&quot;: 99.53}&#39;
+
+{&quot;payment_id&quot;:12}
+HTTP 200
+</code></pre>
+<p>La réponse est un <strong>JSON contenant l&#39;identifiant du paiement créé</strong> : <code>{&quot;payment_id&quot;: 12}</code> (code HTTP 200 via la gateway ; le service renvoie 201 en interne). Cet identifiant est exactement ce dont <code>store_manager</code> a besoin pour construire le lien de paiement de la commande. On le retrouve ensuite dans la commande lorsqu&#39;on la crée par le flux normal (<code>POST /orders</code>) :</p>
+<pre><code>$ curl -X POST http://localhost:8081/store-manager-api/orders \
+    -H &quot;Content-Type: application/json&quot; \
+    -d &#39;{&quot;user_id&quot;: 1, &quot;items&quot;: [{&quot;product_id&quot;: 1, &quot;quantity&quot;: 2}, {&quot;product_id&quot;: 2, &quot;quantity&quot;: 1}]}&#39;
+
+{&quot;order_id&quot;:1}
+
+$ curl http://localhost:8081/store-manager-api/orders/1
+{
+    &quot;items&quot;: &quot;[{\&quot;product_id\&quot;: 1, \&quot;quantity\&quot;: 2}, {\&quot;product_id\&quot;: 2, \&quot;quantity\&quot;: 1}]&quot;,
+    &quot;payment_link&quot;: &quot;http://api-gateway:8080/payments-api/payments/process/13&quot;,
+    &quot;total_amount&quot;: &quot;4059.48&quot;,
+    &quot;user_id&quot;: &quot;1&quot;
+}
+</code></pre>
+<p>La commande conserve donc un <code>payment_link</code> qui pointe vers <code>.../payments/process/13</code> : le paiement #13 a été généré automatiquement à la création de la commande. <strong>(Critère A de la grille : une transaction de paiement est générée après chaque commande.)</strong></p>
+<hr>
+<h2>Activité 2 — Utiliser le lien de paiement</h2>
+<p>Une fois la commande créée et le <code>payment_id</code> obtenu, on traite le paiement avec <code>POST /payments/process/:id</code>, puis on vérifie son état avec <code>GET /payments/:id</code>.</p>
+<pre><code>$ curl -X POST http://localhost:8081/payments-api/payments/process/13 \
+    -H &quot;Content-Type: application/json&quot; \
+    -d &#39;{&quot;cardNumber&quot;: 9999999999999, &quot;cardCode&quot;: 123, &quot;expirationDate&quot;: &quot;2030-01-05&quot;}&#39;
+
+{&quot;is_paid&quot;:true,&quot;order_id&quot;:1,&quot;payment_id&quot;:13}
+HTTP 200
+
+$ curl http://localhost:5009/payments/13
+{
+    &quot;id&quot;: 13,
+    &quot;is_paid&quot;: true,
+    &quot;order_id&quot;: 1,
+    &quot;total_amount&quot;: 4059.48,
+    &quot;user_id&quot;: 1
+}
+</code></pre>
+<h3>Question 2 — Quel type d&#39;information envoyons-nous dans <code>POST payments/process/:id</code> ? Serait-ce le même format en SOA ?</h3>
+<p>Nous envoyons les <strong>données de la carte de crédit</strong>, en <strong>JSON</strong>, dans le corps de la requête :</p>
+<pre><code class="language-json">{
+    &quot;cardNumber&quot;: 9999999999999,
+    &quot;cardCode&quot;: 123,
+    &quot;expirationDate&quot;: &quot;2030-01-05&quot;
+}
+</code></pre>
+<p>C&#39;est une communication <strong>REST/JSON</strong> typique des microservices : un verbe HTTP (<code>POST</code>), une ressource identifiée par l&#39;URL (<code>/payments/process/13</code>) et une charge utile JSON légère.</p>
+<p>Avec un service <strong>SOA</strong>, le format serait différent. SOA s&#39;appuie typiquement sur <strong>SOAP/XML</strong> transporté via un <strong>ESB (Enterprise Service Bus)</strong> et décrit par un contrat <strong>WSDL</strong>. La même information ressemblerait plutôt à une enveloppe SOAP, beaucoup plus verbeuse :</p>
+<pre><code class="language-xml">&lt;soap:Envelope xmlns:soap=&quot;http://www.w3.org/2003/05/soap-envelope&quot;&gt;
+  &lt;soap:Body&gt;
+    &lt;ProcessPayment xmlns=&quot;http://store-manager/payments&quot;&gt;
+      &lt;PaymentId&gt;13&lt;/PaymentId&gt;
+      &lt;CardNumber&gt;9999999999999&lt;/CardNumber&gt;
+      &lt;CardCode&gt;123&lt;/CardCode&gt;
+      &lt;ExpirationDate&gt;2030-01-05&lt;/ExpirationDate&gt;
+    &lt;/ProcessPayment&gt;
+  &lt;/soap:Body&gt;
+&lt;/soap:Envelope&gt;
+</code></pre>
+<p>Donc <strong>non</strong>, ce ne serait pas le même format : REST/JSON (léger, sans contrat formel obligatoire) en microservices, contre SOAP/XML/WSDL via ESB (lourd, fortement typé) en SOA. C&#39;est d&#39;ailleurs un des arguments de l&#39;ADR 001 du dépôt de paiement en faveur des microservices : des protocoles de communication légers, déjà alignés avec le reste du <code>store_manager</code>.</p>
+<h3>Question 3 — Quel résultat obtenons-nous de <code>POST payments/process/:id</code> ?</h3>
+<pre><code class="language-json">{&quot;is_paid&quot;: true, &quot;order_id&quot;: 1, &quot;payment_id&quot;: 13}
+</code></pre>
+<p>Le service confirme que le paiement #13 (rattaché à la commande #1) a été traité avec succès : <code>is_paid</code> passe à <code>true</code>. Le <code>GET /payments/13</code> le confirme côté base de données du microservice (<code>&quot;is_paid&quot;: true</code>).</p>
+<hr>
+<h2>Activité 3 — Nouveaux endpoints dans KrakenD</h2>
+<p>J&#39;ai ajouté à <code>config/krakend.json</code> les endpoints de <strong>création</strong> (<code>POST</code>) et de <strong>mise à jour</strong> (<code>PUT</code>) des commandes, plus un <code>GET</code> pour les lire. Le <code>POST</code> porte une <strong>limitation du nombre de requêtes</strong> (rate limiting), par minute et par routeur :</p>
+<pre><code class="language-json">{
+  &quot;endpoint&quot;: &quot;/store-manager-api/orders&quot;,
+  &quot;method&quot;: &quot;POST&quot;,
+  &quot;backend&quot;: [
+    { &quot;url_pattern&quot;: &quot;/orders&quot;, &quot;host&quot;: [&quot;http://store_manager:5000&quot;] }
+  ],
+  &quot;extra_config&quot;: {
+    &quot;qos/ratelimit/router&quot;: {
+      &quot;max_rate&quot;: 200,
+      &quot;every&quot;: &quot;1m&quot;
+    }
+  }
+},
+{
+  &quot;endpoint&quot;: &quot;/store-manager-api/orders&quot;,
+  &quot;method&quot;: &quot;PUT&quot;,
+  &quot;backend&quot;: [
+    { &quot;url_pattern&quot;: &quot;/orders&quot;, &quot;host&quot;: [&quot;http://store_manager:5000&quot;] }
+  ]
+}
+</code></pre>
+<p>Le <code>PUT /store-manager-api/orders</code> est précisément l&#39;endpoint qu&#39;utilisera le service de paiement à l&#39;activité 4 pour notifier le <code>store_manager</code>.</p>
+<hr>
+<h2>Activité 4 — Mettre à jour la commande après le paiement</h2>
+<p>Si le paiement réussit, l&#39;information ne doit pas rester enfermée dans le microservice de paiement : il faut prévenir le <code>store_manager</code> que la commande est payée. C&#39;est le rôle de <code>process_payment</code>, qui appelle <code>update_order</code> dans <code>src/controllers/payment_controller.py</code> du dépôt <strong>log430-labo5-payment</strong>.</p>
+<h3>Question 4 — Quelle méthode avez-vous dû modifier et qu&#39;avez-vous modifié ?</h3>
+<p>J&#39;ai modifié <strong>deux choses</strong> dans <code>payment_controller.py</code> :</p>
+<ol>
+<li>Dans <code>process_payment</code>, l&#39;appel était codé en dur avec de mauvais arguments (<code>update_order(0, False)</code>). Je l&#39;ai corrigé pour passer le véritable <code>order_id</code> et le statut payé :</li>
+</ol>
+<pre><code class="language-python">def process_payment(payment_id, credit_card_data):
+    _process_credit_card_payment(credit_card_data)
+    update_result = update_status_to_paid(payment_id)
+    result = {
+        &quot;order_id&quot;: update_result[&quot;order_id&quot;],
+        &quot;payment_id&quot;: update_result[&quot;payment_id&quot;],
+        &quot;is_paid&quot;: update_result[&quot;is_paid&quot;]
+    }
+    # Notifier le Store Manager que la commande est maintenant payée (is_paid = true).
+    update_order(update_result[&quot;order_id&quot;], update_result[&quot;is_paid&quot;])
+    return result
+</code></pre>
+<ol start="2">
+<li>La méthode <code>update_order</code> était vide (<code>pass</code>). Je l&#39;ai implémentée pour qu&#39;elle fasse un <code>PUT /orders</code> <strong>via l&#39;API Gateway</strong> (et non directement sur <code>store_manager</code>), exactement comme décrit dans <code>config/krakend.json</code> sous <code>/store-manager-api/orders</code> :</li>
+</ol>
+<pre><code class="language-python">def update_order(order_id, is_paid):
+    &quot;&quot;&quot; Trigger order update once it is paid. Passe par l&#39;API Gateway KrakenD. &quot;&quot;&quot;
+    try:
+        response_from_store_manager = requests.put(
+            &#39;http://api-gateway:8080/store-manager-api/orders&#39;,
+            json={&#39;order_id&#39;: order_id, &#39;is_paid&#39;: is_paid},
+            headers={&#39;Content-Type&#39;: &#39;application/json&#39;},
+            timeout=5
+        )
+        if response_from_store_manager.ok:
+            logger.debug(f&quot;Commande {order_id} mise à jour : {response_from_store_manager.json()}&quot;)
+            return True
+        logger.error(f&quot;Échec de la mise à jour de la commande {order_id} : &quot;
+                     f&quot;{response_from_store_manager.status_code} {response_from_store_manager.text}&quot;)
+        return False
+    except requests.RequestException as e:
+        logger.error(f&quot;Erreur lors de la mise à jour de la commande {order_id} : {e}&quot;)
+        return False
+</code></pre>
+<p><strong>Preuve que ça fonctionne de bout en bout.</strong> Après avoir traité le paiement #13, la commande #1 est bien passée à <code>is_paid = True</code> dans <code>store_manager</code> :</p>
+<pre><code>$ curl http://localhost:8081/store-manager-api/orders/1
+{
+    &quot;is_paid&quot;: &quot;True&quot;,
+    &quot;items&quot;: &quot;[{\&quot;product_id\&quot;: 1, \&quot;quantity\&quot;: 2}, {\&quot;product_id\&quot;: 2, \&quot;quantity\&quot;: 1}]&quot;,
+    &quot;payment_link&quot;: &quot;http://api-gateway:8080/payments-api/payments/process/13&quot;,
+    &quot;total_amount&quot;: &quot;4059.48&quot;,
+    &quot;user_id&quot;: &quot;1&quot;
+}
+</code></pre>
+<p>Et les logs de l&#39;API Gateway montrent que le <code>PUT</code> provient bien du conteneur <code>payments_api</code> (IP <code>172.23.0.9</code>) et qu&#39;il transite par KrakenD — la communication respecte la façade :</p>
+<pre><code>[GIN] | 200 | 234ms | 172.23.0.1 | POST &quot;/store-manager-api/orders&quot;        ← client crée la commande
+[GIN] | 200 |   7ms | 172.23.0.1 | GET  &quot;/store-manager-api/orders/1&quot;
+[GIN] | 200 |  90ms | 172.23.0.9 | PUT  &quot;/store-manager-api/orders&quot;         ← payments_api notifie store_manager
+[GIN] | 200 | 189ms | 172.23.0.1 | POST &quot;/payments-api/payments/process/13&quot;
+</code></pre>
+<p><strong>(Critère B de la grille : la commande est mise à jour après chaque paiement.)</strong></p>
+<hr>
+<h2>Activité 5 — Tester le rate limiting avec Locust</h2>
+<p>J&#39;ai écrit le test <code>test_rate_limit</code> dans <code>locustfiles/locustfile.py</code> (il poste des commandes sur l&#39;endpoint protégé par rate limit), puis j&#39;ai changé la cible de Locust dans <code>docker-compose.yml</code> pour viser l&#39;API Gateway au lieu du service directement :</p>
+<pre><code># Avant : --host=http://store_manager:5000
+# Après : --host=http://api-gateway:8080
+</code></pre>
+<pre><code class="language-python">@task(1)
+def test_rate_limit(self):
+    &quot;&quot;&quot;Test pour vérifier le rate limiting de KrakenD&quot;&quot;&quot;
+    payload = {
+        &quot;user_id&quot;: random.randint(1, 3),
+        &quot;items&quot;: [{&quot;product_id&quot;: random.randint(1, 4), &quot;quantity&quot;: random.randint(1, 10)}]
+    }
+    response = self.client.post(&quot;/store-manager-api/orders&quot;, json=payload)
+    if response.status_code == 503:
+        print(&quot;Rate limit atteint!&quot;)
+</code></pre>
+<h3>Question 5 — À partir de combien de requêtes par minute observe-t-on les erreurs 503 ?</h3>
+<p>La configuration impose <code>max_rate: 200</code> <code>every: 1m</code>, soit <strong>200 requêtes par minute</strong> par routeur. Les erreurs 503 apparaissent donc <strong>dès que la cadence dépasse 200 req/min</strong> : les 200 premières passent (HTTP 201), toutes les suivantes dans la même fenêtre d&#39;une minute sont rejetées par KrakenD avec un <strong>HTTP 503 Service Unavailable</strong>, sans jamais atteindre <code>store_manager</code>.</p>
+<p>J&#39;ai lancé Locust en headless, 100 utilisateurs, <em>spawn rate</em> 1/s, pendant 90 s, ciblant l&#39;API Gateway. La charge offerte (~22,9 req/s ≈ <strong>1 375 req/min</strong>) dépasse largement la limite, donc la grande majorité des requêtes sont rejetées :</p>
+<pre><code>Type  Name                              # reqs   # fails             |  req/s  failures/s
+POST  /store-manager-api/orders          2054   1759 (85.64%)        |  22.93     19.64
+
+Error report
+# occurrences   Error
+-------------   -------------------------------------------------------------------------
+1759            POST /store-manager-api/orders: 503 Server Error: Service Unavailable
+</code></pre>
+<p>Et la console affiche bien le message du test à chaque rejet :</p>
+<pre><code>Rate limit atteint!
+Rate limit atteint!
+... (×1759)
+</code></pre>
+<p><strong>Interprétation :</strong> sur les 2054 requêtes envoyées, <strong>1759 (85,6 %) ont reçu un 503</strong> et ~295 ont réussi. Ces ~295 réussites sur 90 s correspondent à environ <strong>197 req/min</strong>, c&#39;est-à-dire exactement le plafond configuré de 200 req/min — KrakenD laisse passer le quota puis rejette tout le surplus. Le code HTTP renvoyé pour le rate limiting est bien <strong>503</strong>, comme anticipé dans le test.</p>
+<p><em>(Note : Locust se termine avec le code de sortie 1 parce qu&#39;il comptabilise les 503 comme des « échecs » de requête ; ce n&#39;est pas une erreur du test mais le comportement attendu du rate limiting.)</em></p>
+<hr>
+<h2>Activité 6 — Endpoint de test pour le timeout</h2>
+<p>J&#39;ai ajouté dans <code>store_manager.py</code> un endpoint qui simule une réponse lente :</p>
+<pre><code class="language-python">@app.get(&#39;/test/slow/&lt;int:delay_seconds&gt;&#39;)
+def test_slow_endpoint(delay_seconds):
+    &quot;&quot;&quot;Endpoint pour tester les timeouts de l&#39;API Gateway.&quot;&quot;&quot;
+    time.sleep(delay_seconds)  # Simule une opération lente
+    return {&quot;message&quot;: f&quot;Response after {delay_seconds} seconds&quot;}, 200
+</code></pre>
+<p>Puis je l&#39;ai exposé dans <code>config/krakend.json</code> avec un <strong>timeout de 5 secondes</strong> :</p>
+<pre><code class="language-json">{
+  &quot;endpoint&quot;: &quot;/store-manager-api/test/slow/{delay}&quot;,
+  &quot;method&quot;: &quot;GET&quot;,
+  &quot;backend&quot;: [
+    {
+      &quot;url_pattern&quot;: &quot;/test/slow/{delay}&quot;,
+      &quot;host&quot;: [&quot;http://store_manager:5000&quot;],
+      &quot;timeout&quot;: &quot;5s&quot;
+    }
+  ]
+}
+</code></pre>
+<h3>Question 6 — Que se passe-t-il avec un délai supérieur au timeout (5 s) ? Quelle est l&#39;importance du timeout ?</h3>
+<p><strong>Délai inférieur au timeout (2 s) → succès :</strong></p>
+<pre><code>$ curl http://localhost:8081/store-manager-api/test/slow/2
+HTTP 200 en 2.017977s
+{&quot;message&quot;:&quot;Response after 2 seconds&quot;}
+</code></pre>
+<p><strong>Délai supérieur au timeout (10 s) → KrakenD coupe la requête à 5 s :</strong></p>
+<pre><code>$ curl http://localhost:8081/store-manager-api/test/slow/10
+HTTP 500 en 5.010749s
+Corps réponse: []          ← réponse vide
+
+# Logs KrakenD :
+KRAKEND ERROR: [ENDPOINT: /store-manager-api/test/slow/:delay] context deadline exceeded
+[GIN] | 500 | 5.001904466s | GET &quot;/store-manager-api/test/slow/10&quot;
+</code></pre>
+<p>Dans le navigateur, au lieu d&#39;attendre 10 secondes, la requête est <strong>interrompue par KrakenD au bout d&#39;exactement 5 secondes</strong> : on reçoit une erreur (HTTP 500, corps vide), et le journal indique <code>context deadline exceeded</code>. Le <code>store_manager</code>, lui, continue son <code>sleep(10)</code> en arrière-plan, mais sa réponse est ignorée car le client a déjà été libéré.</p>
+<p><strong>Importance du timeout en microservices.</strong> Sans timeout, un service lent (ou bloqué) propage sa lenteur à tous ceux qui l&#39;appellent : les requêtes s&#39;empilent, les threads/connexions se saturent, et une panne locale se transforme en panne globale (<em>cascading failure</em>). Le timeout est une protection : il garantit un temps de réponse borné, libère rapidement les ressources, et permet de basculer vers une stratégie de repli (réessai, valeur par défaut, <em>circuit breaker</em>). Concrètement ici, si <code>payments_api</code> devenait très lent, le timeout de 5 s sur la gateway empêcherait une seule transaction lente de bloquer la création des commandes pour tous les autres clients.</p>
+<hr>
+<h2>Activité 7 — Test de charge</h2>
+<p>J&#39;ai exécuté un test de charge avec Locust sur la création de commandes à travers l&#39;API Gateway (100 utilisateurs, <em>spawn rate</em> 1/s). Les deux services tournent en conteneurs sur le même réseau <code>labo05-network</code>, le <code>store_manager</code> avec MySQL + Redis, le <code>payments_api</code> avec sa propre base MySQL.</p>
+<p>Observations principales :</p>
+<ul>
+<li>Tant que la cadence reste sous <code>200 req/min</code>, les requêtes passent (HTTP 201) et chaque commande déclenche bien la création d&#39;un paiement dans le microservice.</li>
+<li>Au-delà, l&#39;API Gateway protège le backend : les requêtes excédentaires sont rejetées (rate limiting) <strong>avant</strong> d&#39;atteindre <code>store_manager</code>, ce qui maintient les temps de réponse du backend stables même sous forte charge. C&#39;est exactement le rôle attendu d&#39;une façade : absorber et réguler le trafic pour protéger les services en aval.</li>
+</ul>
+<hr>
+<h2>Intégration CI/CD et conteneurisation</h2>
+<p>Chaque dépôt possède un pipeline GitHub Actions (<code>.github/workflows/ci.yml</code>) qui s&#39;exécute à chaque <code>push</code>/<code>pull_request</code> et comporte deux jobs :</p>
+<ol>
+<li><strong><code>test</code></strong> — installe les dépendances, démarre les services nécessaires (MySQL, et Redis pour <code>store_manager</code>) comme <em>service containers</em>, crée le <code>.env</code>, charge le schéma + données seed (<code>db-init/init.sql</code>), puis exécute <code>pytest</code>.</li>
+<li><strong><code>build</code></strong> — construit l&#39;image Docker du service (conteneurisation), seulement si les tests passent (<code>needs: test</code>).</li>
+</ol>
+<p>Les tests passent localement dans les conteneurs (les mêmes que ceux exécutés par le CI) :</p>
+<pre><code># store_manager
+tests/test_store_manager.py::test_health      PASSED   [ 50%]
+tests/test_store_manager.py::test_stock_flow  PASSED   [100%]
+2 passed in 4.47s
+
+# payments_api
+tests/test_payments.py::test_create_payment   PASSED   [ 33%]
+tests/test_payments.py::test_process_payment  PASSED   [ 66%]
+tests/test_payments.py::test_get_payment      PASSED   [100%]
+3 passed in 2.37s
+</code></pre>
+<p>L&#39;ensemble du projet est conteneurisé via <code>docker compose</code> : un réseau partagé <code>labo05-network</code> (externe) relie les deux stacks, ce qui permet à l&#39;API Gateway de router vers les deux services et au service de paiement de rappeler le <code>store_manager</code>.</p>
+<hr>
+<h2>Conclusion</h2>
+<p>Le laboratoire montre une intégration complète entre deux microservices indépendants, médiée de bout en bout par un API Gateway :</p>
+<ul>
+<li>une transaction de paiement est générée <strong>après chaque commande</strong> (Activité 1) ;</li>
+<li>la commande est mise à jour <strong>après chaque paiement</strong> (Activité 4) ;</li>
+<li>KrakenD applique un <strong>rate limiting</strong> (Activité 5) et un <strong>timeout</strong> (Activité 6), avec un endpoint de test dédié ;</li>
+<li>le tout est testé et conteneurisé, avec un pipeline CI/CD par dépôt.</li>
+</ul>
+<p>Le choix de passer systématiquement par la gateway (et non par des appels directs entre services) est ce qui rend l&#39;architecture évolutive : les hostnames et chemins internes peuvent changer sans toucher au code des services, seule la configuration de KrakenD évolue.</p>
+</body></html>

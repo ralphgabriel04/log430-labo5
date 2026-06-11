@@ -1,0 +1,77 @@
+name: CI - Store Manager
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Services dont l'application a besoin pour exécuter les tests d'intégration
+    services:
+      mysql:
+        image: mysql:8.4.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: labo05_db
+          MYSQL_USER: labo05
+          MYSQL_PASSWORD: labo05
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Créer le fichier .env (CI pointe vers les services localhost)
+        run: |
+          echo "DB_HOST=127.0.0.1" >> .env
+          echo "DB_PORT=3306" >> .env
+          echo "DB_NAME=labo05_db" >> .env
+          echo "DB_USER=labo05" >> .env
+          echo "DB_PASSWORD=labo05" >> .env
+          echo "REDIS_HOST=127.0.0.1" >> .env
+          echo "REDIS_PORT=6379" >> .env
+          echo "REDIS_DB=0" >> .env
+          echo "KAFKA_HOST=labo7-seulement" >> .env
+
+      - name: Charger le schéma et les données seed dans MySQL
+        run: mysql -h 127.0.0.1 -u root -proot < db-init/init.sql
+
+      - name: Run tests (pytest)
+        working-directory: src
+        run: pytest -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build de l'image Docker (conteneurisation)
+        run: docker build -t store-manager:${{ github.sha }} .
